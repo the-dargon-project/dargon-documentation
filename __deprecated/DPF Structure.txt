@@ -1,0 +1,177 @@
+Dargon Package File Structure
+By ItzWarty June 29, 2012
+  Revised August 11, 2012
+  
+//=================================================================================================
+// Endianness
+//=================================================================================================
+All numeric values are little endian unless explicitly stated.
+Floating Point numbers are not used in the Dargon specification.
+
+//=================================================================================================
+// STRINGS AND MAGIC VALUES
+//=================================================================================================
+All values are little endian unless explicitly stated.
+CStrings=Strings are expected to be right-padded with NULs.  
+A CString of " DPF" will start with 20 (space) and end with \0.
+
+Magic values marked as UINT32s will be right padded with NULs if their lengths are < 4... 
+If their lengths are four, something like "   A" will be 0x20 0x20 0x20 0x65 - NO NUL TERMINATOR!
+
+//=================================================================================================
+// Compression
+//=================================================================================================
+As is the case with the Riot Archive File Format, DPF files should be compressed if they aren't 
+*.fsb, *.gfx, or *.fev.  This is to optimize loading speeds.  If a file is compressed in a Dargon 
+package File, it should have its Compressed flags SET!  If the compressed flag is not set, the
+Dargon application must compress the data before sending it to the client.  
+
+If a file is not supposed to be compressed, but is still compressed somehow, it is decompressed
+before being sent to the client.  
+
+//=================================================================================================
+// Pathing
+//=================================================================================================
+All paths are relative to /.  You may not have a \ in a path; Dargon is not guaranteed to replace
+the @'\' character with a '/'.  With this naming convention, / is root, and root has the name "".
+  ex: /DATA/ 
+      /C:/TheDargonProject/Release/Dargon Manager.exe
+	  
+//=================================================================================================
+// Path Resolution and Compression/Decompression
+//=================================================================================================
+The Dargon Package file is not limited to Riot Games' Riot Archive Format.  As such, a Dargon
+Package File is not limited to paths similar to League of Legends' RAF-Paths.  As a result, Dargon
+must resolve internal file paths into League of Legends file paths.  This is done when the file is
+dropped into Dargon Manager.  
+
+Dargon may then associate Game Resource Nodes with the Dargon modifications' entries.  These 
+associations are not stored in the Dargon Package File; rather, the DargonPackageFileModification
+instance, which wraps around the Dargon Package File Library to expose its functionality to the
+modification manager, saves this when serializing itself.  As such, Dargon must resolve package
+contents every time it is installed to a new client.  During idle time, these resolutions may be
+manually processed; reresolution would be a good thing to do after game client patches, as well.
+
+//=================================================================================================
+// DPF Distribution
+//=================================================================================================
+Dargon Package Files should not be distributed while detached, for usability reasons.  
+Dargon Manager should provide an "Export Standalone Dargon Package File (*.dpf)" functionality.
+
+//=================================================================================================
+// DPF GUIDs (Globally Unique Identifiers)
+//=================================================================================================
+Dargon Package Files are assigned GUIDs in order to make them discernable to the Dargon Package
+Distribution Server (Wyvern/DargonWeb).  Applications are to collect GUIDs via visiting /guid/
+When registering to the DargonWeb service (via php form or whatever), the GUID is looked up by the
+Dargon webserver.  If the GUID conflicts with a previously uploaded modification, and no other
+registered file matches the uploaded file, a new GUID is assigned to the Dargon Package File.
+
+For a modification, say FoxeUI v1.0, the GUID might be 0000C72495A84522BC10E000C767E76E
+If FoxeUI v2.0 were to be updated, it would need a DIFFERENT guid.  This GUID might be something
+such as 0000DC0A20D44BD58AB546D643928EAC.  The Dargon Web Service uses GUIDs to discern users' 
+modifications, so it is important that every modification update is distinct from other versions 
+of itself.
+
+If a modification is not to be uploaded to the DargonWeb service, then it is not in need of a
+GUID.  As such, files simply dropped into Dargon Manager (ex: legacy modifications) are not
+assigned NULL-Value (0) GUIDs.
+
+** GUID Representation in Dargon Package Files **
+The Dargon specification specifies that all numerical values are to be stored in little endian.
+GUIDs are the only values in the Dargon Package File which are larger than 64-bits.
+
+GUIDs are stored in two UINT64s.  The first being the high bits (bits 64-127) and the second
+consisting of the lower bits (0-63), and these two fields are respectively known as GUIDHIGH and 
+GUIDLOW.
+
+[                               LOW BITS                               ]
+[  0-7  ][  8-15 ][ 16-23 ][ 24-31 ][ 32-39 ][ 40-47 ][ 48-55 ][ 56-63 ]
+
+[                              HIGH BITS                               ]
+[ 64-71 ][ 72-79 ][ 80-87 ][ 88-95 ][ 96-103][104-111][112-119][120-127]
+
+LOW ADDR [             LOW BITS             ][             HIGH BITS            ] HIGH ADDR
+
+This effectively gives us a little endian 128-bit integer for storage.
+
+** GUID Transmission with Dargon Web **
+Dargon is mainly written in four languages: PHP, JavaScript, C++, and C#.  Other languages,
+such as C++/clr, are occasionally used, but not of huge importance.  JavaScript does not
+support explicit data typing of numerical values; only 53-bits of integer precision are
+supplied by JavaScript.  For reason of consistency, we thusly transmit GUIDs in a string
+representation, ex: "00001FFFF2654A6EA68C9B7F6805254F".  This represents the numerical
+value of           0x00001FFFF2654A6EA68C9B7F6805254F.  
+
+[DPF R1]
+struct DPF
+{
+   struct DPFHeader header;
+   struct DPFFileTable content;
+   struct DPFStringTable;
+   struct DPFFileContentTable;
+}
+
+enum DPFPackageFlags : UINT64
+{
+   Empty             = 0x0000000000000000U,        //
+   ContentDetached   = 0x0000000000000001U         // The content is located in fileName.dpf.dat
+}
+
+enum DPFEntryFlags : UINT64
+{
+   Empty             = 0x0000000000000000U,
+   Compressed        = 0x0000000000000001U         // The content of this DPF Entry is located in fileName.dpf.dat
+}
+
+struct DPFHeader
+{
+   UINT32 dpfHeaderMagic;                          // = " DPF" as UINT32 (ASCII encoding, no NUL termination) 0x20445046
+   UINT32 dpfRevision;                             // 1, for Revision 1
+   DPFPackageFlags dpfFlags;                       // 
+   UINT32 dpfReservedA;				                  // RESERVED - MUST BE 0
+   UINT32 dpfReservedB;							         // RESERVED - MUST BE 0
+   UINT32 nameStringTableIndex;                    // Index of Name of the modification in the Dargon Package File's string table
+   UINT32 authorStringTableIndex;                  // Index of Author of the modification in the Dargon Package File's string table
+   UINT32 version;                                 // Version of the modification. Dargon looks at this for updating.
+   UINT32 versionStringTableIndex;                 // Index of Version of the modification (ex: Dargon Community Edition) in the Dargon Package File's string table
+   UINT32 website;                                 // Index of Human-Readable Website Ex: http://Dargon.ItzWarty.com/mods/1337/ in the Dargon Package File's string table
+   UINT32 description;                             // Index of Description in the Dargon Package File's string table
+   UINT32 providerIp;                              // 32-bit IP address (Big endian ex 127, 0, 0, 1), 0.0.0.0 = no provider (legacy mod)
+   
+   UINT64 GUIDLOW;                                 // Bytes 1st-64th   of GUID [0, 63]    See GUID section above
+   UINT64 GUIDHIGH;                                // Bytes 65th-128th of GUID [64, 127]  See GUID section above
+   
+   UINT32 DPFFileTableOffset;                      // Offset to DPF File Table from the DPF Header Block's top (ex: start of file)
+   UINT32 DPFStringTableOffset;                    // Offset to DPF String Table from the DPF Header Block's top (ex: start of file)
+   UINT32 DPFFileContentTableOffset;               // Offset to DPF File Content Table Table from the DPF Header Block's top (ex: start of file)
+}
+
+struct DPFFileTable
+{
+   UINT64 dpfContentMagic;                         // = "ItzWarty" as UINT64 (ASCII encoding, no NUL termination)
+   UINT32 entryCount;                              // # entries
+   DFPFileEntry[entryCount] entries;               // 
+   char[32] dpfContentEndmagic;                    // = "Schwff! Round the corner!      "  (ASCII encoding, NUL termination)
+}
+
+struct DPFFileEntry
+{
+   UINT32 internalPathStringTableIndex;            // Internal path of the file which we are representing in the Dargon Package File's string table
+   DPFEntryFlags fileFlags;                        // Flags describing our DPF Entry (64-bit)
+   UINT32 dataTableContentOffset;                  // Our data starts at (byte*)pDataTableContent   + dataTableContentOffset
+   UINT32 contentLength;                           // Length of our data, in bytes.
+}
+
+struct DPFStringTable
+{
+   UINT32 DPFStringTableHeader;                    // 0x10 0x72 0x23 0x31
+   UINT32 stringCount;
+   cstring[stringCount] strings;                   // Obviously this means that strings can't contain \0 in them...
+}
+
+struct DPFFileContentTable
+{
+   UINT64 DPFFileContentTableHeader;               // = "<(^_^)>!" as UINT64 (ASCII encoding, no NUL termination)
+   byte[] pDataTableContent;                       // File offsets begin here
+}

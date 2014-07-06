@@ -1,0 +1,34 @@
+﻿###################################################################################################
+# Remoted Partial Trees - Merging and Optimizations                                               #
+###################################################################################################
+A resource node must implement the GetResourcePath and GetParent methods.  DSP queries return sub-
+sections of trees; if you're searching for "Annie", you'll find a tree similar to what follows:
+LoL:                                : 0   A query returns the entire tree section leading up to it.
+ ├─0.0.0.25                         : 53  This tree is clearly incomplete.  If we were to perform
+ │ ├─DATA                           : 71  another search query, we would get another incomplete 
+ │ │ └─Characters                   : 98  tree, yet we could merge the results of that query with
+ │ │   └─Annie                      : 103 the results of the previous query to get a more complete
+ │ │     ├─Annie.dds                : 105 tree.  
+ │ │     ├─Annie.inibin             : 106 
+ │ │     └─Annie.skl                : 107 A simpler use case involves traversing a tree, as is often
+ │ └─LEVELS                         : 302 done through Dargon Manager's Resource Browser.  When we
+ └─0.0.0.26                         : 484 load the resource browser, we query all top level
+   └─DATA                           : 485 nodes (Ie: "LoL:") with GetNodeInfo.  Such a query will 
+     └─Characters                   : 572 give us info about the nodes, revealing their names to 
+       └─Annie                      : 592 "LoL:", "HoN:", etc.  We then use GetNodeChildInfo to
+         ├─Annie_loadscreen0.dds    : 608 query the chidlren of those nodes, though the results of 
+         └─Annie_loadscreen1.dds    : 609 that query  are not displayed (The LoL: node is not yet
+expanded by the user).  
+
+When the user requests node descriptors via a query, the user will often traverse the resultant
+node set with the same operation (ie: via for loop).  Under pure DSP, this would require one query
+per node, which would be inefficient.  We instead perform a GetNodeInfos bulk request, to request
+all nodes' information in one query.  
+
+- ResourceNodeResultSet -
+DSPExClient resource queries return ResourceNodeResultSets.  After a query is performed, the 
+resultant partial tree is merged with the main resource tree, and the resultant set stores 
+references to nodes in that tree.  When the resultant set's values are accessed via some indexer,
+the resultant tree clones the node (object pooling should probably be used here) and the cloned
+node also references the resultant set.  If data from the node is requested, but the data has not
+been loaded through a DSPEx query, then such data is, as stated above, loaded in bulk.  

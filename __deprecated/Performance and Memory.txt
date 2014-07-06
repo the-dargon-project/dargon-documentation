@@ -1,0 +1,34 @@
+PerformanceUtil.MinimizeMemoryFootprint() is called during the following times, with the following
+justifications for whether or not GC.Collect is called.
+
+Dargon has just initialized:
+   GC Collect may be called.  We have just loaded large objects, XMLDocument for save state, and 
+   the resource tree has just been loaded.  This justifies GC.Collect.  Furthermore, DargonD 
+   initialization may happen at start-up, during which the user might not intend to use Dargon or
+   League of Legends.  As such, it is worth it to minimize our working set, unloading a lot of the
+   JITter's work and winforms stuff.
+
+Dargon has just loaded its resource tree:
+   Loading the resource trees involves loading entire RAF Archive Directory Files into memory 
+   using RAFLib.  However, those large objects are quickly unused, yet remain in memory for to be
+   garbage collected.  
+
+   In addition, a large amount of temporary data structures are created when building our resource
+   tree, and many of them will be dereferenced and available.
+
+Dargon has just injected into a victim process:
+   When League of Legends launches, Dargon undergoes a burst of activity during which it resolves
+   modifications (requiring the resource tree to be in working memory).  Then, after modification
+   resolution, Dargon injects to a destination process.  Then, Dargon remains dormant until there
+   is another process to inject into.  
+
+   This justifies garbage collection, as we know Dargon will be dormant when the user is in game.
+
+Dargon resolved a modification, and then waited a minute with no further activity:
+   When a user drops a modification into Dargon Manager, the modification must be resolved, 
+   associating modification files with game files.  This requires all of the game resource tree to
+   be loaded into working memory.  
+
+   After the user has dropped modifications into Dargon Manager, the nodes have been resolved, and
+   Dargon no longer needs the resource tree in memory.  It is valid to minimize our working set,
+   moving the resource trees out of working memory.

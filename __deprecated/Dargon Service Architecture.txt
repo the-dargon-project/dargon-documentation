@@ -1,0 +1,63 @@
+Dargon Service Architecture
+
+//=================================================================================================
+// Introduction
+//=================================================================================================
+Dargon is a modular modification installation and development system designed to target a diverse
+target set of games.  To achieve such a thing, Dargon's functionality is split into interfaces, 
+permitting generic plugins (ie: View DDS) to work on a diverse set of games.
+
+This document will cover the design of the Dargon Daemon and the interfaces exposed by it, known
+collectively as the Dargon Service.
+
+//=================================================================================================
+// High level architecture view
+//=================================================================================================
+Dargon's service is split into two main subsystems: the resource subsystem and the modification
+subsystem.  The two subsystems are closely intertwined, due to the nature of the application, and
+they will be briefly described in this section.
+
+   Resource Subsystem  
+           ^
+           |   Game Packages and Resource Trees
+           |   File Unpackers
+           |   File Converters
+           |  
+           |   File Mod Applicators
+           |   Modifications
+           v
+  Modification Subsystem
+
+- Game Packages -
+Game packages are responsible for:
+   - Resource Tree Loading
+   - Application/Patch Detection (to force tree reloads, to trigger modification sendtime)
+   - File Grouping (Relevant for Dargon views)
+
+During resource tree loading, 
+
+
+
+
+   File Unpackers (*.zip -> file[], RAF not included here)
+      - Generate Plugin Nodes under resource tree
+
+   File Converters (*.dds -> *.bmp, only for non-archives)
+
+   File Mod Applicators 
+      - Bound to Content Nodes themselves.
+      - Generic - Replaces file 1:1
+      - (*.inidiff + *.ini -> *.ini)
+      - File Repackers (file[] -> *.zip)
+
+   File Viewers (ie: Views *.bmp)
+
+
+                        Game Package                1a) 
+                         /       |  \
+                      1a/        |   \
+              File Unpacker      |2a  \3a
+                       1b\\\     |     |
+                          \\\    |     |
+                           File Converter 
+                            

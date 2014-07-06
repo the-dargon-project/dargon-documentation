@@ -1,0 +1,365 @@
+﻿###################################################################################################
+# Summary:                                                                                        #
+###################################################################################################
+The Dargon Service Protocol is responsible for the connection between Dargon Service and other
+clients, such as the Dargon Console.  For the extended Dargon Service Protocol, we open up a second 
+socket for two-way potentially event-driven communication.  The client-to-server socket simply uses 
+the old Dargon Service Protocol socket.  DSPEx sessions are initiated by the DSP_EX_INIT C2S 
+opcode.  You cannot switch back to the DSP protocol afterwards, so clients should explicitly 
+request either DSP or DSPEx connections.
+
+###################################################################################################
+# Some problems faced when serializing file trees                                                 #
+###################################################################################################
+Dargon automatically reloads resources when it detects that the League of Legends AIR client has
+launched.  This is done so that Dargon can reassociate its modifications to the other League of 
+Legends client installation.  
+
+We face issues when Dargon unloads the previous tree by dereferencing it (allowing the tree to be
+garbage collected).  For example, what if we had DATA/Characters/NewCharacter loaded, but open up
+the public realm game client?  The new loaded resource tree will not contain that new character, 
+who is not available in the NA realm.  
+
+This problem CAN be solved by using a "Handle" system; when a remote dargon requests the root dir,
+that acquires a handle, which is stored in a hashmap that has a value pointing to the root node.  
+By doing this, we solve the problem of switching game clients, as the old resource data is still
+loaded.  This, however, gets messy, regardless of how it is implemented.  In addition, if game data
+is reloaded for the same game installation, after a patch, DSP clients who have handles pointing to
+the old installation tree will now have resource nodes which point to invalid offsets in DAT files.
+
+We'd still like to represent our nodes with integers, though; giving our nodes distinct IDs allows
+us to call the root node 0, RAF Archive #1 1, etc.  In addition, such a system could allow us to
+find nodes quickly, using a hash map or just basic tree traversal, if implemented properly.  
+
+Our resultant trees always look similar to the following, with the following numbering:
+LoL:                                : 0  We have used pre-order traversal to assign distinct IDs
+ ├─lol_air_client                   : 1  to the nodes in our tree.  The root node has ID 0, and
+ │ └─releases                       : 2  its first child (determined by lexographical order) has
+ │   ├─0.0.0.193                    : 3  ID 1.  
+ │   │ ├─deploy                     : 4  
+ │   │ │ ├─assets                   : 5  You can get the ROOT ID with DSP_EX_C2S_IO_GET_ROOT_ID
+ │   │ │ │ └─images                 : 6  
+ │   │ │ │   └─champions            : 7  We can request the child nodes of ROOT by requesting the
+ │   │ │ │     └─Ahri_0.jpg         : 8  node of the ID determined by DSP_EX_C2S_IO_GET_ROOT_ID.  
+ │   │ │ └─lol.properties           : 9  This yields the IDs 1, 12, and 17.  
+ │   │ └─releasemanifest            : 10 
+ │   └─0.0.0.220                    : 11 If the DSP client requests the children of ID 14, we can
+ ├─0.0.0.25                         : 12 easily and quickly traverse the tree to find our node.
+ │ ├─DATA                           : 13 Either that, or we can look up a hashmap.  
+ │ │ ├─Buffs                        : 14 
+ │ │ └─Characters                   : 15 
+ │ └─LEVELS                         : 16 
+ └─0.0.0.26                         : 17 <- NOTE: This node is now /0.0.0.26, NOT 0.0.0.26!!!
+ 
+Now let's say we reload our game resources.  It's a bad idea to reuse the old IDs, as we might 
+have ID 8 point to 0.0.0.25/DATA/Characters/Annie/Info/Annie_Square.dds instead of the old node of 
+lol_air_client/releases/0.0.0.193/deploy/assets/images/champions/Ahri_0.jpg.  Quite obviously, 
+this would lead to us having a bad time; instead, we want to throw an error, telling the caller 
+that the requested data is invalid.  
+
+When we reload our resources, we still give each node a distinct id, but we now start our count
+from 18, and we dereference all the old resource nodes.  If distinct ID is going to go past the 
+maximum value of UINT32, we will instead start our count from 0.   We cannot afford to let the
+distinct ID counter reset to 0 while we are assigning nodes IDs, as that will mess up our lookup 
+later on.
+
+Of course, that means that eventually, ID 0 will be redefined after almost one hundred thousand 
+client reloads.  We're going to pray to Jesus Christ that we don't get affected by that.  Also, 
+we're going to assign UIDs to our trees, and those UIDs will be accessible.
+
+###################################################################################################
+# DSP - IO                                                                                        #
+###################################################################################################
+In order to transmit as little data between our applications as possible, DSP attempts to perform
+a few optimizations that .net remoting would not do.  To start off, DSP will transmit only the 
+node data requested for visual presentation.  
+
+As the Dargon Service permits a content node to have children, we have defined a few flags to
+describe nodes.  In addition, we have separated the transmission type of resources and 
+modifications, as they represent extremely different underlying data.  On the client-end of things,
+it is encouraged that the resource tree is cached, so that duplicate requests do not have to go
+through the overhead of the DSPEx protocol (and IPC in general).
+
+[Flags]
+DSPExResourceNodeFlag
+{
+   IsContentNode  = 0x01,
+   HasChildren    = 0x02,
+   IsRoot         = 0x04,
+   IsPluginNode   = 0x08
+}
+DSPExResourceNodeDescriptor
+{
+   DSPEx_ResourceNodeFlag;
+   uint dspNodeId;                //This is just incremented as we go
+   cstring name;
+}
+DSPExRequestedAdditionalResourceInfoFlag : UINT32
+{
+   Name           = 0x00000001,
+}
+
+DSPEX_INVALID_NODE_ID = 0xFFFFFFFFU;
+
+DargonGame : byte
+{
+   Any               = 0x00,
+   LeagueOfLegends   = 0x01
+}
+
+// This byte is sent with an LS packet to find out info
+// Information is returned in multiple DSPExNodeResponseDescriptor
+DSPNodeRequestFlags : byte, (struct DSPExNodeResponseDescriptor)
+{
+   NodeID               = 0x01,
+   (uint nodeID)
+
+   NodeParentID         = 0x02,
+   (uint parentNodeID)
+
+   NodeFileDescriptor   = 0x04, //Gets descriptor for reading the node's content
+   (DecompressionAlgorithm algorithm
+       != CA_RESERVED2: //CA_RESERVED2 = File isn't a content node
+         uint offset
+         uint length
+         TEXT filePath)
+
+   NodeChildrenCount    = 0x08, //# of direct children
+   (uint childCount
+   (NodeChildren         = 0x18?)
+    uint[childCount] childrenIds
+   )
+   
+   NodeName             = 0x20, //ResourceNode.Name
+   (TINYTEXT childName)
+   
+   NodePath             = 0x40, //ResourceNode.GetResourcePath
+   (TEXT childPath)
+}
+
+enum CompressionAlgorithm : byte
+{
+   CA_NONE           = 0x00,
+   CA_ZLIB           = 0x01,     // in Riot Archive File
+
+
+   CA_DONTCARE       = 0xF0,     // Nonspecified.  Dargon will choose the best CA.
+
+   // For DSPNodeRequestFlags:
+   CA_RESERVED1      = 0xFE,     // Returned if node is an in-memory data source 
+   CA_RESERVED2      = 0xFF      // Returned if node cannot be read (ie: directory node)
+}
+           
+###################################################################################################
+# DSP - All Use Cases                                                                             #
+###################################################################################################
+- Events [Resource Tree Loaded, Resource Tree Root Loaded]
+- Command Line Interface
+- Request/Response (Resource Tree Enumeration, Get Dargon Version, Get Static Modifications) 
+
+###################################################################################################
+# DEFINE WHAT                   AS
+DEFINE   BOOL                   BYTE
+DEFINE   LONG                   INT32
+DEFINE   ULONG                  UINT32
+DEFINE   TINYTEXT               UBYTE  length, BYTE[length] content
+DEFINE   TEXT                   USHORT length, BYTE[length] content
+DEFINE   LONGTEXT               ULONG  length, BYTE[length] content
+DEFINE   CSTRING                BYTE[] nullTerminatedCString
+
+###################################################################################################
+# Transaction Flow
+DEFINE DSP_EX_OK              0x00
+DEFINE DSP_EX_DONE            DSP_OK
+DEFINE DSP_EX_CONTINUE        0x01
+
+###################################################################################################
+# "Messages"                                                                                      #
+###################################################################################################
+Everything's "message-like" so that multiple transactions can run asynchronously - This allows us 
+to have an event-based system.  A "Message" should represent all the data that needs to go one way;
+we can imagine that the DSP system could be easily extended to UDP though we will avoid that due to
+packet loss, duplicate packets, etc complicating things; TCP is much more applicable than UDP here,
+especially considering that at one point, all DSP-connected modules were actually part of the DSP
+process, and thusly were written for a lossless communication.  In general, the exchange pattern 
+between Dargon Service and DSP clients will be either sending some request-response messages or 
+event messages.
+
+struct DSPExMessage
+{
+   uint messageSize;    // Size of the entire message's frame (includes messageSize)
+   uint transactionId;  // HIGH Bit True - Server Initiated.  LOW Bit true - Client initiated.
+   [data]               // Contains opcode if first packet
+}
+
+The consequence of a message-based system is high overhead for tiny transactions such as the Get
+Dargon Version opcode.  DSPEx is intended for Dargon Manager, where performance isn't so critical
+(and as such, overhead isn't a huge issue. Being able to support events in a non-hackish way is
+more critical), while performance-critical tasks are left for DSP (such as DSP_GSM).  
+
+###################################################################################################
+# S2C Opcodes                                                                                     #
+###################################################################################################
+DSP_EX_S2C_EVENT_QUIT                           0xE0  # PACKET 1 (END)
+DSP_EX_S2C_EVENT_RESOURCES_RELOAD               0xE1  # PACKET 1 (END)
+
+###################################################################################################
+# C2S Opcodes                                                                                     #
+###################################################################################################
+# MetaOps:                                      0x10
+DSP_EX_C2S_META_GET_DARGON_VERSION              0x10  # PACKET 1
+   S2C BYTE[5] for Version [0].[1].[2].[3][4]         # PACKET 2 (END)
+   END_TRANSACTION
+   
+###################################################################################################
+# ResourceNode Ops::Root Operations             0x20
+DSP_EX_C2S_IO_GET_ROOT_INFO                     0x20  # PACKET 1
+   C2S DARGONGAME gameId
+   S2C UINT32     rootNodeID                          # PACKET 2 (END)
+   S2C UINT32     treeId
+   S2C TINYTEXT   gameName
+   END_TRANSACTION
+   
+DSP_EX_C2S_IO_GET_ROOT_INFOS                    0x21  # PACKET 1 (TODO/NI)
+   # Set games = NULL if Games is null or contains DargonGame.Any
+   if(games == NULL)
+   {
+      C2S UINT32 0xFFFFFFFFU;
+   }
+   else
+   {
+      C2S UINT32 gamesCount;
+      C2S DargonGame[] gameIDs;
+   }
+
+   if(games == NULL)
+      S2C UINT32     gameCount
+   foreach game:
+      if(games == NULL)
+         DargonGame gameId
+      S2C UINT32     rootNodeID                          # PACKET 2 (END)
+      S2C UINT32     treeId
+      S2C TINYTEXT   gameName
+   END_TRANSACTION
+
+DSP_EX_C2S_IO_GET_NODE_ROOT_INFO                0x22  # PACKET 1 (TODO/NI)
+   C2S UINT32     nodeId
+   S2C UINT32     rootNodeID                          # PACKET 2 (END)
+   S2C UINT32     treeId
+   S2C DARGONGAME gameId
+   S2C TINYTEXT   gameName
+   END_TRANSACTION
+   
+DSP_EX_C2S_IO_GET_NODE_ROOT_INFOS               0x23  # PACKET 1 (TODO/NI)
+   C2S UINT32     nodeCount;
+   C2S UINT32[]   nodeIds;
+   S2C UINT32     rootNodeID                          # PACKET 2 (END)
+   S2C UINT32     treeId
+   S2C DARGONGAME gameId
+   S2C TINYTEXT   gameName
+   END_TRANSACTION
+   
+###################################################################################################
+# ResourceNode Ops::Path Operations/Traversal   0x25
+DSP_EX_C2S_IO_GET_BREADCRUMBS_INFO              0x25  # PACKET 1 (TODO/NI)
+   C2S UINT32     startNodeId
+   C2S UINT32     endNodeId                           # If INVALID_NODE_ID, = ROOT of startNode
+   C2S DSPExNodeRequestFlags requestFlags
+   S2C UINT32     nodeCount                           # PACKET 2 (END), from [startNode, endNode]
+   S2C DSPExNodeResponseDescriptor[]
+   END_TRANSACTION
+
+DSP_EX_C2S_IO_LIST_NODE_CHILDREN                0x26  # PACKET 1
+   C2S UINT32 queryNodeID
+   C2S DSPExNodeRequestFlags requestFlags
+   S2C bool nodeExists
+      true: S2C UINT32 responseCount 
+            S2C DSPExNodeResponseDescriptor[responseCount]
+   END_TRANSACTION
+   
+###################################################################################################
+# ResourceNode Ops::Node Info                   0x30
+DSP_EX_C2S_IO_GET_NODE_INFO                     0x30  # PACKET 1
+   C2S UINT32 NodeID
+   C2S DSPExNodeRequestFlags requestFlags
+   S2C bool nodeExists
+      true: S2C DSPExNodeResponseDescriptor
+   END_TRANSACTION
+   
+DSP_EX_C2S_IO_GET_NODE_INFOS                    0x31  # PACKET 1
+   C2S UINT32 nodeCount
+   C2S UINT32[nodeCount] nodeIDs
+   C2S DSPExNodeRequestFlags requestFlags
+   foreach node:
+      S2C bool nodeExists
+         true: S2C DSPExNodeResponseDescriptor
+   END_TRANSACTION
+   
+###################################################################################################
+# ResourceNode Ops::Path Resolution             0x35
+DSP_EX_C2S_IO_RESOLVE                           0x35  # PACKET 1 NI
+   C2S CSTR    Query
+   S2C UINT32  ResultCount                            # PACKET 2 (END)
+   foreach result
+      S2C DSPEx_ResourceNodeDescriptor
+   END_TRANSACTION
+   
+DSP_EX_C2S_IO_BULK_RESOLVE                      0x36  # PACKET 1 NI
+   C2S UINT32 QueryCount
+   foreach Query
+      C2S Query
+   foreach Query                                      # PACKET 2 (END)
+      S2C ResultCount
+      foreach result
+         S2C DSPEx_ResourceNodeDescriptor
+   END_TRANSACTION
+
+###################################################################################################
+# ModificationNode Ops:                         0x50
+DSP_EX_C2S_MOD_LS_ROOT                          0x50  # PACKET 1
+   S2C UINT32  Root Mod Count                         # PACKET 2 (END)
+   foreach Root Mod
+      S2C DSPEx_ModificationNodeDescriptor
+          -> Push to string table
+   S2C String Table
+   END_TRANSACTION
+   
+###################################################################################################
+# Console Ops:                                  0x70
+DSP_EX_C2S_CONSOLE_OPEN                         0x70  # PACKET 1
+   S2C UINT32 ConsoleHandle                           # PACKET 2 (END)
+   END_TRANSACTION
+   
+DSP_EX_C2S_CONSOLE_WRITELINE                    0x71  # PACKET 1
+   C2S UINT32 ConsoleHandle
+   C2S STRING content
+     S while(anyContent)                              # PACKET 2 (END)
+          S2C DSP_EX_CONTINUE
+          S2C STRING response
+   S2C DSP_EX_DONE
+   END_TRANSACTION
+   
+##
+# Other Features such as Console Color/Cursor Position could go here
+##
+
+DSP_EX_C2S_CONSOLE_CLOSE                        0x79  # PACKET 1
+   S2C UINT32 ConsoleHandle                           # PACKET 2 (END)
+   END_TRANSACTION
+
+   
+###################################################################################################
+# PluginImpl Reserved                           0xA0 to 0xEF
+.DSP_EX_PLUGIN_OPERATION
+   if(selectedGame == All)
+      SND DargonGame selectedGame
+   C2S DATA
+
+###################################################################################################
+# Events, System, Diagnostics: 0xE0 -> 0xFF
+DSP_EX_C2S_ECHO                                 0xFE  # PACKET 1
+   C2S BLOB data
+   S2C BLOB data                                      # PACKET 2 (END)
+   END_TRANSACTION
+
+DSP_EX_C2S_EVENT_QUIT                           0xFF  # PACKET 1 (END)

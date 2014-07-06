@@ -1,0 +1,41 @@
+====================================================================================================
+= Dargon Providers                                                                                 =
+====================================================================================================
+Dargon Providers are a huge part of what makes Dargon powerful.
+
+Issues:
+   - Traditional modifications are downloaded from a website via HTTPS in a non-standardized format.
+     To exemplify, a modification might have DATA in its root, 0.0.0.25 in its root, or Annie.dds in
+     its root.  The 0.0.0.25 would be best; it would provide the most context to a modtree to game-
+     tree resolver.  However, it wouldn't be visually appealing to users; 0.0.0.25 means nothing to
+     users, while Annie does mean something.
+     Nonstandard file formats are also an issue; files might be distributed raw (download a file at
+     a time), zipped, roshal archived, etc.  When more operating systems come into the mix, this
+     problem will only become worse in time.  The Dargon Package File File Specification serves as
+     a solution to this problem by defining a standardized way of installing modifications.
+   - Traditional modifications are static.  If the modification developer makes a change to the
+     modification, the user is not notified to update.  If the user doesn't like a change in the
+     modification, the user is unable to roll back, either.  Dargon Providers solve this by 
+     retaining previous versions of Dargon modifications.
+   - Modifications can break when the game client patches.  Even if every user spams a website to
+     state that the modification doesn't work, or the author is aware of it, the modification 
+     remains broken, and users' game clients crash or display strange things.  
+
+Solutions:
+   - Standardize League of Legends file interchange through the Dargon Package File.  Include meta-
+     data in Dargon Package Files to point to Dargon Providers (Mainly Wyvern).  The Dargon Daemon
+     ignores Dargon Package File names (ie: Naughty Nautilus.dpf).  The DPF's internal file tree
+     is standardized with a root of LoL: and a subdirectory such as RAF followed by a subdirectory
+     of 0.0.0.25.  The RAF would not be necessary in most cases, though it allows us to narrow down
+     the Dargon search, as an optimization.  Dargon Package Files can be transmitted in a compressed
+     form, and then decompressed later on.
+   - Dargon Modifications contain metadata which point to NULL or a remote Dargon Provider's host-
+     name or IP Address.  By querying this remote Dargon Provider, clients can pull revisions of
+     modifications.
+   - Dargon Modifications can signal their Dargon Providers when the client crashes while the mod is
+     enabled.  When the game has successfully loaded, Dargon Clients signal success to the Dargon
+     provider.  Success is a per-account flag; running multiple games won't increase the success
+     indicator.  We can use a simple statistics test to determine whether or not the true population
+     proportion of success of a given mod is less than a certain threshold, and if such is the case,
+     we might remotely disable the modification or mark it as unsable for our end users.
+

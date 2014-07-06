@@ -1,0 +1,35 @@
+IChange - Represents a file (Content Node) swap
+   - Add/Remove/Modify of resource nodes
+   - Renames are handled as add change and remove change.
+   - Represents IChange
+
+IIntermediateMutation - Changes to files that represent collections of data (Inibin files, 
+   - Mutation of a content node.  
+   - GUID of Applicator - Who is applying a collection of intermediate changes?
+   - Converted to IChange, which is associated with each modification.
+
+Changes and IntermediateMutations both reference their associated IModification
+
+---
+Mod Application Stages:
+ - Clear AssociatedChanges property of each IModification
+ - Enumerate and group IIntermediateMutations of modifications (same ApplicatorGUID & content node)
+ - Pass IIntermediateModification groups to IIntermediateMergers, which yield IChanges
+ - Foreach new IChange: Associate with one modification.  Associate Dummy IChanges with other
+   modifications that referenced the source IIntermediateMutation (To avoid double mod application).
+ : We now have a collection of IChanges [IIntermediateMutation is pretty much out of the picture].
+   The IChanges are associated with nodes in our resource tree.  Foreach node in our resource tree,
+   there are zero or one associated IChanges; otherwise, we have a conflict and should present that
+   to the user.
+^ The above is one method.  What we do with our mutated tree can vary from:
+ - Returning a mutated tree (LeagueOfLegends.GetModdedTree())
+ - Transforming our mutated tree and batching it over to Dargon-LoL
+
+Batching it over to Dargon-LoL:
+ : Modifications are batched/applied over to Dargon-LoL through Dargon Applicators.
+   Applicators handle patterns (think: Regex) to determine whether or not they can handle applying
+   a content node.  If two applicators can handle applying a modification, then it is assumed that
+   either applicator can properly apply the modification (as in, we'll log a warning, but happily
+   select one of them; that's undefined behavior as to which one will be picked, though).
+ - Applicators send DSPEx messages over to the Dargon Daemon (These are potentially batched by the
+   Dargon Service).

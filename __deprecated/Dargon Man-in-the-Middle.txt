@@ -1,0 +1,177 @@
+Michael Yu
+The Dargon Project
+8 May 2013
+                                      Dargon Man-in-the-Middle 
+
+//------------------------------------------------------------------------------------------------//
+// Introduction to Request/Response                                                               //
+//------------------------------------------------------------------------------------------------//
+The majority of League of Legends platform networking is performed as a simple request/response
+operation depicted in Figure 1.
+
++-------------------------------------------------------------------------------------------------+
+| Figure 1: Request/Response Architecture                                                         |
++-------------------------------------------------------------------------------------------------+
+|                                                                                                 |
+|                 [Client]                      [Server]                                          |
+|                 +-----------------------+     +---------------------------+                     |
+|                 | League of Legends.exe | <-> | League of Legends Servers |                     |
+|                 +-----------------------+     +---------------------------+                     |
+|                             Request ->                                                          |
+|                             o-----------------------------> o                                   |
+|                                                       [Processing]                              |
+|                             o <-----------------------------o                                   |
+|                                                   <- Response                                   |
+|                                                                                                 |
++-------------------------------------------------------------------------------------------------+
+
+As seen in Figure 1, the League of Legends servers wait for a command ("Request") from the League of 
+Legends client.  The Diagram uses League of Legends.exe as an example, as we have a little bit more
+complexity with the AIR Client, which will be discussed below.  The League of Legends servers then
+process the request and reply to the client ("Response").
+
+Of course, a simple request/response architecture can multiplex many server-client interactions in
+one stream by transmitting BLOBs (Big Large OBjects) that have size, a stream number, and internal
+content; we aren't bound to synchronous communication.  We will use synchronous communication in our
+examples since conceptually, that is easier for us to imagine.  It should be noted that the 
+communication isn't required to be request/response either; the method we describe is fairly 
+generic, yet once again, request/response is a simple architecture that is conceptually easy to
+understand.
+
+League of Legends never transmits data in the clear; data is always encrypted somehow.  For example,
+the communication between the game client and the game servers encrypts data with the Blowfish
+algorithm that has a random key specified at the launch of the League of Legends executable.  This
+is probably enforced by the ENET protocol that they've built on top of (ENET 1.2 or 1.2.5).  The AIR
+Client tunnels an RTMP connection through SSL (Known as RTMPS).
+
+//------------------------------------------------------------------------------------------------//
+// The Dargon Project's Approach to Layering - Man in the Middle                                  //
+//------------------------------------------------------------------------------------------------//
+The Dargon Project's approach to modifying the League of Legends experience involves placing a
+transparent software layer between the League of Legends client and the services provided by others
+(Windows API's file system, windows messaging system, Direct3D calls, etc), and we will take the 
+same approach towards League of Legends networking, as depicted in figure 2.
+
++-------------------------------------------------------------------------------------------------+
+| Figure 2: Request/Response Architecture with Man-in-the-Middle                                  |
++-------------------------------------------------------------------------------------------------+
+|                                                                                                 |
+|     [Client]                      [MitM]                       [Server]                         |
+|     +-----------------------+     +----------------------+     +---------------------------+    |
+|     | League of Legends.exe | <-> | DargonD Local Server | <-> | League of Legends Servers |    |
+|     +-----------------------+     +----------------------+     +---------------------------+    |
+|                 Request ->                                                                      |
+|                 o--------------------------> o                                                  |
+|                                         [Processing]                                            |
+|                                              o-----------------------------> o                  |
+|                                                                     [MOAR Processing]           |
+|                                              o <-----------------------------o                  |
+|                                         [Processing]               <- Response                  |
+|                 o <--------------------------o                                                  |
+|                                                                                                 |
+|                                                                                                 |
++-------------------------------------------------------------------------------------------------+
+
+Placing a layer between the League of Legends server and the League of Legends game client involves
+running a local server and routing connections through it.  Such an operation is trivial:
+   1. Initialize Local Server on Dargon Daemon
+   2. Detect game start-up (suspended due to DargonMaestro) and inject DargonLoL into game client.
+   3. DargonLoL hooks network operations for connecting a socket.
+   4. When League of Legends attempts to connect to game servers:
+          a. Connect to Local Server
+          b. Transmit game server destination (4-byte IP + 2-byte port) and blowfish key along
+             with any other necessary data.  Perhaps, open this socket connection through the 
+             Dargon Service Protocol?
+          c. If any handshake is necessary (doubt it?) perform additional handshake.  Dargon
+             extensions might play a role here, though that's TBD.
+
+Dargon's Local Server must asynchronously read and process game frames from the underlying stream in
+real-time.  For the best end-user experience, the messages must be dispatched as soon as possible.
+
+On the Local Server, we can filter packets or inject packets into the packet stream.  The Local 
+Server would decrypt packets via Blowfish, analyze their contents, and potentially invoke various
+plugin-subscribe-able events.  If the packet event were not cancelled, the original encrypted packet
+would then be passed to the game client.  The data sent from the League of Legends client to the
+DargonD Local Server does not have to be the same data that the DargonD Local Server sends to the
+League of Legends servers.  The converse is true; the data sent from the League of Legends servers
+to the DargonD Local Server does not have to be the same data that the DargonD Local Server sends to
+the League of Legends client.
+
+This becomes more interesting when we look at the case of the AIR Client, where an RTMP (Real-Time
+Messaging Protocol) stream is tunneled through an TSL/SSL Stream.  In the example above, a simple
+game-side hook would be good enough for processing the inputs and outputs of the game clients.
+
+However, SSL uses asymmetric keys for encryption; the data sent from the server to the client is
+encrypted with a private key and can be decrypted by the client, which has the public key.  However,
+the data sent from the client to the server cannot normally be decrypted, as we do not have the 
+private key.  With a man-in-the-middle, we can pass a fake certificate to the League of Legends AIR
+client, a certificate generated to look like the one Riot would pass to League of Legends, with the
+difference being that we have both the public AND private keys in our hands.  
+
+//------------------------------------------------------------------------------------------------//
+// The Dargon Service & Man in the Middle                                                         //
+//------------------------------------------------------------------------------------------------//
+Everything in Dargon is built on top of the Dargon service, and such will be the case with this, as
+well.  If the socket from Localhost to the League of Legends servers is owned by the Dargon Service,
+then we need to also transmit configuration data from the League of Legends client to the Local
+Server.  We will introduce new Dargon Service Protocol opcodes to handle this.
+
+    DSP_EX_C2S_IO_NET_SOCKET_CREATE
+    DSP_EX_C2S_IO_NET_SOCKET_SET_PROPERTY
+    DSP_EX_C2S_IO_NET_SOCKET_CONNECT
+    DSP_EX_C2S_IO_NET_SOCKET_SHUTDOWN
+
+When the League of Legends game client creates a new socket (via socket() function (or WSASocket?)),
+we create the underlying socket and send a DSP_EX_C2S_IO_NET_SOCKET_CREATE request to the Dargon 
+Service, along with the handle of our socket (which is returned by socket()).  The Dargon Service's
+IO Service will create two sockets: one for the Local<->Server connection and one for the 
+Local <-> Client connection, and this pair will be added to a table with ID being the socket handle
+that was sent from the game client.
+
+Whenever setsockopt is invoked (which happens a few times after we connect()), the DSPClient must
+send DSP_EX_C2S_IO_NET_SOCKET_SET_PROPERTY { id = socketId, params } to be processed by the Dargon
+Service (by the way, packets are guaranteed to be ordered by DSP, so this can be done async).  Such
+is the case for when Connect and Shutdown are invoked.  
+
+Through this method, all data sent from the League of Legends game client to the League of Legends
+server (or even any locally running processes!) will be hooked; if socket or WSASocket are invoked,
+then Dargon is intercepting traffic.  Whenever Dargon itself wants to connect to someone (DargonD?),
+then we must call the trampoline function as to not enter an infinite loop (where we'd create a new
+socket every time we tried to create a new socket).  
+
+In future implementations, it may be beneficial to limit packet capturing to the game server ip and
+port specified in the command-line arguments of the League of Legends game, but for now, I have
+presented a generic solution to the problem.
+
+//------------------------------------------------------------------------------------------------//
+// The Dargon Daemon's IO Service                                                                 //
+//------------------------------------------------------------------------------------------------//
+Now I will go over a design for the IO Service of the Dargon Daemon.  The IO Service only processes
+the networking in/out of the Dargon Daemon for now; we are not routing file IO through it at the
+moment, and I am still deciding as to whether or not that will be done.
+
+     Advantages: All IO is routed through Dargon Service = easier debugging and potentially, reverse
+                 engineering of files (assuming that files aren't read in their entirety before they
+                 are processed).  Simpler DargonLoL implementation.
+  Disadvantages: All File IO has overhead.  If we want to do things such as tagging Textures as
+                 associated with a certain file, then we need to transmit that data across 
+                 boundaries.
+
+The Dargon Daemon's IO Service unwraps packets to get their clean data before converting them to
+Packet objects (which are OOP-friendly).  Yes, we're basically going to have a TON of interfaces
+describing the game packets in the end, but this allows us to hack together functionality if the 
+League of Legends protocol ever changes.  
+
+The IO Service is then responsible for doing its own analysis of the game packets.  If the packets
+contain information that needs to be protected (ie: usernames and passwords), then the packet must
+not be sent down to event handlers, though the username and password may be saved locally (in an
+encrypted form in RAM).
+
+The PacketEventArgs contains an internal list of PacketEvent objects.  When a packet is mutated and
+debugging is enabled, a new PacketEvent is pushed to the end of the PacketEventArgs' list.  This way,
+we can see how our packet changes as it runs through various event handlers.  When a packet is
+cancelled, then that event is pushed into the PacketEventArgs' event list as well.  
+
+After packets have been processed, we send no data if the packet has been cancelled (the Packet
+Event Arguments object sets this to false but latches if it is set to true).  Otherwise, we send
+the packet.

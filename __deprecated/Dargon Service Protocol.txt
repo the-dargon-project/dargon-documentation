@@ -1,0 +1,96 @@
+Summary:
+   The Dargon Service Protocol is responsible for the connection between Dargon Service and other
+   clients, such as the Dargon Console.
+
+The Dargon Service acts as the Server, others connect to the service
+   Connection is usually to TCP 127.0.0.1:21072, though if that port isn't available, another port
+   is used.
+
+The client initiates transactions with opcodes.
+
+###################################################################################################
+# DEFINE WHAT                   AS
+
+DEFINE BOOL                   BYTE
+DEFINE LONG                   INT32
+DEFINE ULONG                  UINT32
+
+
+###################################################################################################
+# Transaction Flow
+DEFINE DSP_OK                 0x00
+DEFINE DSP_DONE               DSP_OK
+DEFINE DSP_CONTINUE           0x01
+
+###################################################################################################
+# Transaction Initiation Opcodes (C2S)                                                            #
+###################################################################################################
+# Outputs text to GUI
+DSP_WRITELINE : 0x01
+C2S UINT TEXTLENGTH                                # Generic String Read/Write
+C2S CHAR[TEXTLENGTH] CONTENT                       # ASCII
+END_TRANSACTION                                    # No S2C OK to allow fast client 
+
+# Outputs text 
+DSP_WRITELINE : 0x10
+   non-interactive mode:
+      C2S UINT TEXTLENGTH                                # Generic String Read/Write
+      C2S CHAR[TEXTLENGTH] CONTENT                       # ASCII
+      END_TRANSACTION                                    # No S2C OK to allow fast client 
+   interactive mode:                                     # This is known as a query.
+      C2S UINT TEXTLENGTH
+      C2S CHAR[TEXTLENGTH] CONTENT                       # ASCII
+      while(anyContent)
+         S2C DSP_CONTINUE:
+            S2C: UINT                  contentLength     #
+            S2C: CHAR[contentLength]   content           # 
+         S2C DSP_WRITELINE:                              # Readline
+            jump interactive mode;
+      S2C DSP_DONE                                       #
+      END TRANSACTION
+
+   
+###################################################################################################
+# Gets the current Dargon version, as a byte[5]
+DSP_GET_DARGON_VERSION : 0x20
+   S2C BYTE[5] for Version [0].[1].[2].[3][4]
+   END_TRANSACTION
+   
+###################################################################################################
+# Gets Dargon's static modifications
+DSP_GET_STATIC_MODIFICATIONS : 0x40
+   start:
+      S2C DSP_CONTINUE:
+         S2C CHAR[512]           rafPath (CSTR)
+         S2C UINT                contentLength
+         S2C BYTE[contentLength] content
+         goto start;
+      S2C DSP_CONTINUE_SPECIAL:
+         S2C DSP_CONTINUE:
+            S2C UINT32           bufferLength
+            S2C byte[bufferLength] str
+            goto DSP_CONTINUE_SPECIAL
+         S2C DSP_DONE:
+            S2C UINT32           contentLength
+            S2C byte[contentLen] content
+            goto start;
+      S2C DSP_DONE:
+         END_TRANSACTION
+         
+###################################################################################################
+# Enter interactive mode.  In interactive mode, the server may respond to a writeline.
+DSP_SET_INTERACTIVE : 0xE0
+   C2S BOOL interactive
+   END_TRANSACTION
+   
+###################################################################################################
+# Dargon Service Extended initialization
+DSP_EX_INIT : 0xFE
+   ; Server switches DSP Client instance's opcodes to DSPEx
+   S2C DSP_EX_OK
+   END_TRANSACTION
+
+# Ends session
+DSP_GOODBYE : 0xFF
+   S2C OK                                             # Necessary to know client didn't crash
+   END_TRANSACTION

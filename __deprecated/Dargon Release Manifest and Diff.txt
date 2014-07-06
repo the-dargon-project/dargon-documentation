@@ -1,0 +1,181 @@
+###################################################################################################
+# Dargon Release Manifest File Specification                                                      #
+###################################################################################################
+- Introduction -
+Dargon Release Manifests describe the installed Dargon files (dlls/exes, resources, etc) so that
+when we perform Dargon Application file-related operations, such as Dargon Uninstallation or 
+patching, we only change the files that we want to change.  This basically ensures that we don't
+delete everything in the C: drive if our user installs Dargon there :P.
+
+Release Manifests Diffs are used when we patch Dargon Package File modifications; the server
+sends an RMD indicating the changes that are going to be made to the modification, along with 
+various other metadata (if need be).
+
+:Guids:
+Dargon Release Manifests' headers reference GUIDs.  All Dargon entities (Dargon Daemon itself, 
+modifications, etc) have GUIDs.  DRM and DRMD files contain these GUIDs as a safety check, ensuring
+that changes by DRMDs only apply to what they're supposed to apply to (DRM and DRMD target GUIDs
+must be the same).  
+
+:Metadata:
+Metadata examples (Dargon Core):
+   FDPP - Fallback Path to the new Dargon Patcher. If Dargon doesn't understand the version number
+          (as in, it expects Version 1 but sees Version 2), then this new patcher is downloaded and
+          run.
+
+:Misc:
+Strings are represented in UTF-8.
+
+- Type definitions -
+struct GUID
+{
+   UINT64 low;
+   UINT64 high;
+}
+
+enum DRMChangeType
+{
+   Add    = 1,
+   Remove = 2,
+   Modify = 3,
+   Rename = 4
+}
+
+- Dargon Release Management File Structure -
+struct DRMFile
+{
+   struct DRMHeader        header;
+   struct DRMMetadataTable metadata;
+   struct DRMFileTable     files;
+   struct DRMStringTable   strings;
+   struct DRMDataBlob      data;
+}
+struct DRMHeader
+{
+   UINT32 headerMagic;                             // "DRMF" ($44524D46, Ascii, no nul termination)
+   UINT32 drmRevision;                             // 1, for Revision 1
+   UINT32 entityRevision;                          // Revision of our entity (UTC Time)
+   UINT64 reserved;                                // Reserved - must be 0
+   UINT32 entityDescriptionStringTableIndex;       // Description of the entity represented
+   GUID   entityGuid;                               // GUID of the thing our DRM represents
+
+   UINT32 metadataTableOffset;                     // Offset to the DRM Metadata Table from File Pos 0
+   UINT32 fileTableOffset;                         // Offset to the DRM File Table from File Pos 0
+   UINT32 stringTableOffset;                       // Offset to the DRM String Table from File Pos 0
+   UINT32 dataTableOffset;                         // Offset to the DRM Data Table/Blob from File Pos 0
+}
+struct DRMMetadataTable
+{
+   UINT32 metadataTableMagic;                      // "META" ($4D455441)
+   UINT32 dependencyCount;
+   GUID[dependencyCount] dependencyGuids;
+
+   // Number of metadata entries that contain raw long longs
+   UINT32 longLongEntryCount;
+   struct LongLongEntry {
+       UINT32 key;
+       UINT64 value;
+   }[entryCount] longLongEntries;
+   
+   // Number of Buffer Metadata Entries that contain offset + length UINT32s (reference to datablock)
+   UINT32 offsetLengthEntryCount;
+   struct OffsetLengthEntry {
+       UINT32 key;
+       UINT32 offset;
+       UINT32 length;
+   }[entryCount] offsetLengthEntries;
+   
+   // Number of Buffer Metadata Entries that contain string indices
+   UINT32 stringTableIndexEntryCount;
+   struct StringTableIndexEntry {
+      UINT32 key;
+      UINT32 stringTableIndex;
+   }[stringTableIndexEntryCount] stringTableEntries;
+
+}
+struct DRMFileTable
+{
+   UINT32 fileTableMagic;                          // "FILE" ($46494C45)
+   UINT32 fileCount;
+   DRMFileEntry[fileCount] files;
+}
+struct DRMFileEntry
+{
+   GUID   guid;
+   UINT32 version;
+
+   // Local Path:
+   // DPF/Archived files: Internal path to the entity inside of the archive
+   // Non-Archived files: Path to the entity (ie: C:/Dargon/Whatever.dds)
+   // Path to actual archive file: Path to the entity.
+   UINT32 localPathStringTableIndex;               // Always defined.
+
+   GUID   packageGuid;                             // filled with zeros if undefined
+   UINT32 packagePathStringTableIndex;             // 0xFFFFFFFF if undefined
+}
+struct DRMStringTable
+{
+   UINT32 DRMStringTableMagic;                     // "STRS" ($53545253)
+   UINT32 stringCount;
+   unicodestring[stringData] strings;
+}
+struct DRMDataBlob
+{
+   UINT32 DRMDataBlobMagic;                        // "DATA" ($44415441)
+   UINT32 blobLength;
+   byte[blobLength] data;
+}
+
+- Dargon Release Management Diff File Structure -
+struct DRMDFile
+{
+   struct DRMDHeader        header;
+   struct DRMDMetadataTable metadata;
+   struct DRMDChangesTable  changes;
+   struct DRMDDataBlob      data;
+}
+struct DRMDHeader
+{
+   UINT32 headerMagic;                             // "DRMD" ($44524D44, Ascii, no nul termination)
+   UINT32 drmRevision;                             // 1, for Revision 1
+   UINT32 entityRevision;                          // Revision of our changes (UTC Time/Version Nums)
+   UINT64 reserved;                                // Reserved - must be 0
+
+   GUID   targetGuid;                              // GUID of the thing our DRMD wants to change
+
+   CRC32  finalManifestCrc;                        // The expected CRC of the manifest after this changeset is applied.
+
+   UINT32 metadataTableOffset;                     // Offset to the DRMD Metadata Table
+   UINT32 changesTableOffset;                      // Offset to the DRMD Changes Table
+   UINT32 dataTableOffset;                         // Offset to the DRMD Data Table/Blob
+   
+   UINT32 nextDrmdHeaderOffset;                    // Offset to the follow-up DRMD header
+}
+struct DRMDMetadataTable
+{
+   UINT32 dependencyCount;
+   GUID[dependencyCount] dependencyGuids;
+
+   UINT32 entryCount;
+   DRMDMetadataEntry[entryCount] entries;
+}
+struct DRMDChangeTable
+{
+   int changesCount;
+   DRMDChangeEntry[changesCount] changes;
+}
+struct DRMDChangeEntry
+{
+   GUID entityGuid;
+   DRMDChangeType changeType;
+   UINT32 packagePathDataTableOffset;
+   UINT32 packagePathDataTableLength;
+
+   byte[256] reserved;
+}
+
+struct DRMDDataBlob
+{
+   UINT32 blobLength;
+   byte[blobLength] data;
+}
